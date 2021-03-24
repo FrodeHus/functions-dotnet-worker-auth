@@ -19,18 +19,29 @@ namespace SecureFunctions
     public class AuthenticationMiddleware : IFunctionsWorkerMiddleware
     {
         private readonly AzureAdConfig _config;
+        private TokenValidationParameters _validationParameters;
         public AuthenticationMiddleware(IOptions<AzureAdConfig> config)
         {
             _config = config.Value;
         }
         public async Task Invoke(FunctionContext context, FunctionExecutionDelegate next)
         {
-            var logger = context.GetLogger<AuthenticationMiddleware>();
+            var logger = context.GetLogger("Authentication");
             var headerData = context.BindingContext.BindingData["headers"] as string;
             var headers = JsonSerializer.Deserialize<Dictionary<string, string>>(headerData);
-            var authorization = headers["Authorization"];
-            var bearerHeader = AuthenticationHeaderValue.Parse(authorization);
-            var token = bearerHeader.Parameter;
+            if (headers.ContainsKey("Authorization"))
+            {
+                var authorization = headers["Authorization"];
+                var bearerHeader = AuthenticationHeaderValue.Parse(authorization);
+                await Authenticate(context, bearerHeader, logger).ConfigureAwait(false);
+            }
+
+            await next(context).ConfigureAwait(false);
+        }
+
+        private async Task Authenticate(FunctionContext context, AuthenticationHeaderValue authenticationHeader, ILogger logger)
+        {
+            var token = authenticationHeader.Parameter;
             try
             {
                 var (t, principal) = await Validate(token).ConfigureAwait(false);
@@ -51,18 +62,21 @@ namespace SecureFunctions
                 logger.LogError(ex, "Failed to validate token");
                 context.Items.Add("Auth.Error", "Failed to validate token");
             }
-
-            await next(context).ConfigureAwait(false);
         }
 
-        private async Task<TokenValidationParameters> ConfigureValidation()
+        private async Task ConfigureValidation()
         {
             var configManager = new ConfigurationManager<OpenIdConnectConfiguration>($"{_config.Instance}common/v2.0/.well-known/openid-configuration", new OpenIdConnectConfigurationRetriever());
             var oidcConfig = await configManager.GetConfigurationAsync().ConfigureAwait(false);
-
-            return new TokenValidationParameters
+            var validAudiences = new string[] { _config.ClientId };
+            if (_config.ClientId.StartsWith("api://"))
             {
-                ValidAudiences = new string[] { _config.ClientId },
+                validAudiences = validAudiences.Append($"api://{_config.ClientId}").ToArray();
+            }
+
+            _validationParameters = new TokenValidationParameters
+            {
+                ValidAudiences = validAudiences,
                 ValidateAudience = true,
                 ValidateIssuer = false,
                 IssuerSigningKeys = oidcConfig.SigningKeys,
@@ -72,10 +86,10 @@ namespace SecureFunctions
 
         public async Task<(JwtSecurityToken, ClaimsPrincipal)> Validate(string token)
         {
-            var validationParameters = await ConfigureValidation().ConfigureAwait(false);
+            await ConfigureValidation().ConfigureAwait(false);
 
             var tokenHandler = new JwtSecurityTokenHandler();
-            var result = tokenHandler.ValidateToken(token, validationParameters, out var jwt);
+            var result = tokenHandler.ValidateToken(token, _validationParameters, out var jwt);
 
             return (jwt as JwtSecurityToken, result);
         }
