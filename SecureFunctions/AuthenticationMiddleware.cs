@@ -69,7 +69,7 @@ namespace SecureFunctions
             var configManager = new ConfigurationManager<OpenIdConnectConfiguration>($"{_config.Instance}common/v2.0/.well-known/openid-configuration", new OpenIdConnectConfigurationRetriever());
             var oidcConfig = await configManager.GetConfigurationAsync().ConfigureAwait(false);
             var validAudiences = new string[] { _config.ClientId };
-            if (_config.ClientId.StartsWith("api://"))
+            if (!_config.ClientId.StartsWith("api://"))
             {
                 validAudiences = validAudiences.Append($"api://{_config.ClientId}").ToArray();
             }
@@ -78,8 +78,9 @@ namespace SecureFunctions
             {
                 ValidAudiences = validAudiences,
                 ValidateAudience = true,
-                ValidateIssuer = false,
+                ValidateIssuer = true,
                 IssuerSigningKeys = oidcConfig.SigningKeys,
+                ValidIssuer = $"https://sts.windows.net/{_config.TenantId}/",
                 ValidateLifetime = true
             };
         }
